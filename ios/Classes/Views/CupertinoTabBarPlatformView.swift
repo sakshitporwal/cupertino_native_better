@@ -14,12 +14,24 @@ private final class TabBarContainerView: UIView {
   }
 }
 
+private final class ConfiguredTabBar: UITabBar {
+  var preferredHeight: CGFloat?
+
+  override func sizeThatFits(_ size: CGSize) -> CGSize {
+    var fitted = super.sizeThatFits(size)
+    if let preferredHeight, preferredHeight > 0 {
+      fitted.height = preferredHeight
+    }
+    return fitted
+  }
+}
+
 class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelegate {
   private let channel: FlutterMethodChannel
   private let container: TabBarContainerView
-  private var tabBar: UITabBar?
-  private var tabBarLeft: UITabBar?
-  private var tabBarRight: UITabBar?
+  private var tabBar: ConfiguredTabBar?
+  private var tabBarLeft: ConfiguredTabBar?
+  private var tabBarRight: ConfiguredTabBar?
   private var lastKnownContainerWidth: CGFloat = 0
   private var layoutRefreshScheduled = false
   
@@ -45,6 +57,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var currentIconSizes: [CGFloat] = [] // Track icon sizes for dynamic height calculation
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
+  private var preferredTabBarHeight: CGFloat? = nil
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -73,6 +86,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     var rightCount: Int = 1
     var leftInset: CGFloat = 0
     var rightInset: CGFloat = 0
+    var preferredHeight: CGFloat? = nil
+    var initialLabelFontFamily: String? = nil
+    var initialLabelFontSize: CGFloat = 0
 
     if let dict = args as? [String: Any] {
       labels = (dict["labels"] as? [String]) ?? []
@@ -106,12 +122,21 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         if let n = style["tint"] as? NSNumber { tint = Self.colorFromARGB(n.intValue) }
         if let n = style["backgroundColor"] as? NSNumber { bg = Self.colorFromARGB(n.intValue) }
       }
+      if let h = dict["height"] as? NSNumber {
+        let value = CGFloat(truncating: h)
+        preferredHeight = value > 0 ? value : nil
+      }
+      if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty {
+        initialLabelFontFamily = ff
+      }
+      if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 {
+        initialLabelFontSize = CGFloat(truncating: fs)
+      }
       if let s = dict["split"] as? NSNumber { split = s.boolValue }
       if let rc = dict["rightCount"] as? NSNumber { rightCount = rc.intValue }
       if let sp = dict["splitSpacing"] as? NSNumber { splitSpacingVal = CGFloat(truncating: sp) }
       // content insets controlled by Flutter padding; keep zero here
     }
-    // Font is read after super.init() below to use self.
 
     // Preload SVG assets dynamically based on what's actually being used
     let allAssetPaths = Set(imageAssetPaths + activeImageAssetPaths).filter { !$0.isEmpty }
@@ -120,6 +145,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     }
 
     super.init()
+
+    self.labelFontFamily = initialLabelFontFamily
+    self.labelFontSize = initialLabelFontSize
 
     container.onBoundsChange = { [weak self] bounds in
       self?.handleContainerBoundsChange(bounds)
@@ -204,9 +232,11 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     let count = max(labels.count, symbols.count)
     if split && count > rightCount {
       let leftEnd = count - rightCount
-      let left = UITabBar(frame: .zero)
-      let right = UITabBar(frame: .zero)
+      let left = ConfiguredTabBar(frame: .zero)
+      let right = ConfiguredTabBar(frame: .zero)
       tabBarLeft = left; tabBarRight = right
+      left.preferredHeight = preferredHeight
+      right.preferredHeight = preferredHeight
       left.translatesAutoresizingMaskIntoConstraints = false
       right.translatesAutoresizingMaskIntoConstraints = false
       // On iOS 26+, allow overflow for Liquid Glass pill effect
@@ -315,8 +345,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         }
       }
     } else {
-      let bar = UITabBar(frame: .zero)
+      let bar = ConfiguredTabBar(frame: .zero)
       tabBar = bar
+      bar.preferredHeight = preferredHeight
       bar.delegate = self
       bar.translatesAutoresizingMaskIntoConstraints = false
       // On iOS 26+, allow overflow for Liquid Glass pill effect
@@ -377,11 +408,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     self.leftInsetVal = leftInset
     self.rightInsetVal = rightInset
     self.currentIconSizes = sizes.compactMap { $0 }.map { CGFloat(truncating: $0) }
-    // Read custom label font from creation params
-    if let dict = args as? [String: Any] {
-      if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty { self.labelFontFamily = ff }
-      if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
-    }
+    self.preferredTabBarHeight = preferredHeight
 channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else { result(nil); return }
       switch call.method {
@@ -392,7 +419,9 @@ channel.setMethodCallHandler { [weak self] call, result in
           let defaultIconSize: CGFloat = 25.0
           let maxIconSize = self.currentIconSizes.max() ?? defaultIconSize
           let extraHeight = max(0, maxIconSize - defaultIconSize)
-          let dynamicHeight = size.height + extraHeight
+          let defaultLabelSize: CGFloat = 10.0
+          let extraLabelHeight = max(0, self.labelFontSize - defaultLabelSize)
+          let dynamicHeight = size.height + extraHeight + extraLabelHeight
           result(["width": Double(size.width), "height": Double(dynamicHeight)])
         } else {
           result(["width": Double(self.container.bounds.width), "height": 50.0])
@@ -616,9 +645,11 @@ channel.setMethodCallHandler { [weak self] call, result in
           let count = max(labels.count, symbols.count)
           if split && count > rightCount {
             let leftEnd = count - rightCount
-            let left = UITabBar(frame: .zero)
-            let right = UITabBar(frame: .zero)
+            let left = ConfiguredTabBar(frame: .zero)
+            let right = ConfiguredTabBar(frame: .zero)
             self.tabBarLeft = left; self.tabBarRight = right
+            left.preferredHeight = self.preferredTabBarHeight
+            right.preferredHeight = self.preferredTabBarHeight
             left.translatesAutoresizingMaskIntoConstraints = false
             right.translatesAutoresizingMaskIntoConstraints = false
             // On iOS 26+, allow overflow for Liquid Glass pill effect
@@ -712,8 +743,9 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
             }
           } else {
-            let bar = UITabBar(frame: .zero)
+            let bar = ConfiguredTabBar(frame: .zero)
             self.tabBar = bar
+            bar.preferredHeight = self.preferredTabBarHeight
             bar.delegate = self
             bar.translatesAutoresizingMaskIntoConstraints = false
             // On iOS 26+, allow overflow for Liquid Glass pill effect
@@ -844,8 +876,14 @@ channel.setMethodCallHandler { [weak self] call, result in
       case "setFont":
         // Update label font and re-apply appearance to all tab bars
         if let args = call.arguments as? [String: Any] {
-          if let ff = args["labelFontFamily"] as? String { self.labelFontFamily = ff.isEmpty ? nil : ff }
-          if let fs = args["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
+          if args.keys.contains("labelFontFamily") {
+            let ff = args["labelFontFamily"] as? String
+            self.labelFontFamily = (ff?.isEmpty ?? true) ? nil : ff
+          }
+          if args.keys.contains("labelFontSize") {
+            let fs = args["labelFontSize"] as? NSNumber
+            self.labelFontSize = fs.map { max(0, CGFloat(truncating: $0)) } ?? 0
+          }
           if #available(iOS 13.0, *) {
             let ap = self.makeAppearance()
             if let bar = self.tabBar {
@@ -861,8 +899,22 @@ channel.setMethodCallHandler { [weak self] call, result in
               if #available(iOS 15.0, *) { right.scrollEdgeAppearance = ap }
             }
           }
+          self.refreshTabBarLayout()
           result(nil)
         } else { result(FlutterError(code: "bad_args", message: "Missing font args", details: nil)) }
+      case "setPreferredHeight":
+        if let args = call.arguments as? [String: Any] {
+          let heightValue = (args["height"] as? NSNumber).map { CGFloat(truncating: $0) } ?? 0
+          let preferredHeight = heightValue > 0 ? heightValue : nil
+          self.preferredTabBarHeight = preferredHeight
+          self.tabBar?.preferredHeight = preferredHeight
+          self.tabBarLeft?.preferredHeight = preferredHeight
+          self.tabBarRight?.preferredHeight = preferredHeight
+          self.container.setNeedsLayout()
+          self.container.layoutIfNeeded()
+          self.refreshTabBarLayout()
+          result(nil)
+        } else { result(FlutterError(code: "bad_args", message: "Missing height args", details: nil)) }
       case "refresh":
         self.refreshTabBarLayout()
         result(nil)
@@ -900,9 +952,9 @@ channel.setMethodCallHandler { [weak self] call, result in
   /// Applies the current label font to a UITabBarAppearance.
   @available(iOS 13.0, *)
   private func applyLabelFont(to ap: UITabBarAppearance) {
-    guard let fontFamily = labelFontFamily, !fontFamily.isEmpty else { return }
+    guard labelFontFamily != nil || labelFontSize > 0 else { return }
     let size = labelFontSize > 0 ? labelFontSize : 10.0
-    let font = UIFont(name: fontFamily, size: size) ?? UIFont.systemFont(ofSize: size)
+    let font = labelFontFamily.flatMap { UIFont(name: $0, size: size) } ?? UIFont.systemFont(ofSize: size)
     let attrs: [NSAttributedString.Key: Any] = [.font: font]
     ap.stackedLayoutAppearance.normal.titleTextAttributes = attrs
     ap.stackedLayoutAppearance.selected.titleTextAttributes = attrs

@@ -209,8 +209,8 @@ class CNTabBar extends StatefulWidget {
 
   /// Optional font size for tab bar item labels.
   ///
-  /// Used together with [labelFontFamily]. When null, the system default size
-  /// is used (approximately 10pt on iOS).
+  /// Used on its own or together with [labelFontFamily]. When null, the
+  /// system default size is used (approximately 10pt on iOS).
   final double? labelFontSize;
 
   @override
@@ -235,6 +235,7 @@ class _CNTabBarState extends State<CNTabBar> {
   double? _lastIconSize;
   String? _lastLabelFontFamily;
   double? _lastLabelFontSize;
+  double? _lastHeight;
 
   // Search state
   bool _isSearchActive = false;
@@ -528,6 +529,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'sfSymbolColors': colors,
       'selectedIndex': widget.currentIndex,
       'isDark': capturedIsDark,
+      if (widget.height != null) 'height': widget.height,
       if (widget.labelFontFamily != null)
         'labelFontFamily': widget.labelFontFamily,
       if (widget.labelFontSize != null) 'labelFontSize': widget.labelFontSize,
@@ -646,6 +648,7 @@ class _CNTabBarState extends State<CNTabBar> {
     _lastSplitSpacing = widget.splitSpacing;
     _lastLabelFontFamily = widget.labelFontFamily;
     _lastLabelFontSize = widget.labelFontSize;
+    _lastHeight = widget.height;
 
     // Force refresh for label rendering (Issue #6: sporadic missing labels with 5 items).
     // First refresh after 50ms; second after 200ms for slow-to-initialize native view.
@@ -847,13 +850,21 @@ class _CNTabBarState extends State<CNTabBar> {
       if (_lastLabelFontFamily != widget.labelFontFamily ||
           _lastLabelFontSize != widget.labelFontSize) {
         await ch.invokeMethod('setFont', {
-          if (widget.labelFontFamily != null)
-            'labelFontFamily': widget.labelFontFamily,
-          if (widget.labelFontSize != null)
-            'labelFontSize': widget.labelFontSize,
+          'labelFontFamily': widget.labelFontFamily ?? '',
+          'labelFontSize': widget.labelFontSize ?? 0.0,
         });
         _lastLabelFontFamily = widget.labelFontFamily;
         _lastLabelFontSize = widget.labelFontSize;
+      }
+
+      if (_lastHeight != widget.height) {
+        await ch.invokeMethod('setPreferredHeight', {
+          'height': widget.height ?? 0.0,
+        });
+        _lastHeight = widget.height;
+        if (widget.height == null) {
+          _requestIntrinsicSize();
+        }
       }
 
       // Layout updates (split / insets)
@@ -947,9 +958,9 @@ class _CNTabBarState extends State<CNTabBar> {
         activeColor: tintColor,
       );
 
-      // Apply custom font family via CupertinoTheme when specified.
+      // Apply custom label typography via CupertinoTheme.
       // CupertinoTabBar derives its label style from the theme typography.
-      if (widget.labelFontFamily != null) {
+      if (widget.labelFontFamily != null || widget.labelFontSize != null) {
         tabBar = CupertinoTheme(
           data: CupertinoTheme.of(context).copyWith(
             textTheme: CupertinoTheme.of(context).textTheme.copyWith(
@@ -1270,7 +1281,7 @@ class _CNTabBarState extends State<CNTabBar> {
       );
     }
 
-    // Fallback to empty circle if nothing provided
-    return const Icon(CupertinoIcons.circle, size: defaultSize);
+    // Allow text-only tabs when no icon is configured.
+    return const SizedBox.shrink();
   }
 }

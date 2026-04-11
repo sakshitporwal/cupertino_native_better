@@ -20,7 +20,9 @@ class _SegmentedControlDemoPageState extends State<SegmentedControlDemoPage> {
     return CupertinoPageScaffold(
       child: CustomScrollView(
         slivers: [
-          const CupertinoSliverNavigationBar(middle: Text('Segmented Control')),
+          const CupertinoSliverNavigationBar(
+            largeTitle: Text('Segmented Control'),
+          ),
           SliverSafeArea(
             top: false,
             sliver: SliverPadding(

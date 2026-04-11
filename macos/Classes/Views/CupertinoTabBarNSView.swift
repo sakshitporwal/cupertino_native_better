@@ -1,9 +1,21 @@
 import FlutterMacOS
 import Cocoa
 
+private final class ConfiguredSegmentedControl: NSSegmentedControl {
+  var preferredHeight: CGFloat?
+
+  override var intrinsicContentSize: NSSize {
+    var size = super.intrinsicContentSize
+    if let preferredHeight, preferredHeight > 0 {
+      size.height = preferredHeight
+    }
+    return size
+  }
+}
+
 class CupertinoTabBarNSView: NSView {
   private let channel: FlutterMethodChannel
-  private let control: NSSegmentedControl
+  private let control: ConfiguredSegmentedControl
   private var currentLabels: [String] = []
   private var currentSymbols: [String] = []
   private var currentBadges: [String] = []
@@ -13,10 +25,12 @@ class CupertinoTabBarNSView: NSView {
   private var currentSizes: [NSNumber] = []
   private var currentTint: NSColor? = nil
   private var currentBackground: NSColor? = nil
+  private var labelFontFamily: String? = nil
+  private var labelFontSize: CGFloat = 0
 
   init(viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
-    self.control = NSSegmentedControl(labels: [], trackingMode: .selectOne, target: nil, action: nil)
+    self.control = ConfiguredSegmentedControl(labels: [], trackingMode: .selectOne, target: nil, action: nil)
 
     var labels: [String] = []
     var symbols: [String] = []
@@ -29,6 +43,9 @@ class CupertinoTabBarNSView: NSView {
     var isDark: Bool = false
     var tint: NSColor? = nil
     var bg: NSColor? = nil
+    var labelFontFamily: String? = nil
+    var labelFontSize: CGFloat = 0
+    var preferredHeight: CGFloat? = nil
 
     if let dict = args as? [String: Any] {
       labels = (dict["labels"] as? [String]) ?? []
@@ -50,6 +67,16 @@ class CupertinoTabBarNSView: NSView {
         if let n = style["tint"] as? NSNumber { tint = Self.colorFromARGB(n.intValue) }
         if let n = style["backgroundColor"] as? NSNumber { bg = Self.colorFromARGB(n.intValue) }
       }
+      if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty {
+        labelFontFamily = ff
+      }
+      if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 {
+        labelFontSize = CGFloat(truncating: fs)
+      }
+      if let h = dict["height"] as? NSNumber {
+        let value = CGFloat(truncating: h)
+        preferredHeight = value > 0 ? value : nil
+      }
     }
 
     super.init(frame: .zero)
@@ -70,8 +97,12 @@ class CupertinoTabBarNSView: NSView {
     self.currentSizes = sizes
     self.currentTint = tint
     self.currentBackground = bg
+    self.labelFontFamily = labelFontFamily
+    self.labelFontSize = labelFontSize
+    self.control.preferredHeight = preferredHeight
     if let b = bg { wantsLayer = true; layer?.backgroundColor = b.cgColor }
     applySegmentTint()
+    applyLabelFont()
 
     control.target = self
     control.action = #selector(onChanged(_:))
@@ -114,6 +145,27 @@ class CupertinoTabBarNSView: NSView {
           self.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
           result(nil)
         } else { result(FlutterError(code: "bad_args", message: "Missing isDark", details: nil)) }
+      case "setFont":
+        if let args = call.arguments as? [String: Any] {
+          if args.keys.contains("labelFontFamily") {
+            let ff = args["labelFontFamily"] as? String
+            self.labelFontFamily = (ff?.isEmpty ?? true) ? nil : ff
+          }
+          if args.keys.contains("labelFontSize") {
+            let fs = args["labelFontSize"] as? NSNumber
+            self.labelFontSize = fs.map { max(0, CGFloat(truncating: $0)) } ?? 0
+          }
+          self.applyLabelFont()
+          result(nil)
+        } else { result(FlutterError(code: "bad_args", message: "Missing font args", details: nil)) }
+      case "setPreferredHeight":
+        if let args = call.arguments as? [String: Any] {
+          let heightValue = (args["height"] as? NSNumber).map { CGFloat(truncating: $0) } ?? 0
+          self.control.preferredHeight = heightValue > 0 ? heightValue : nil
+          self.control.invalidateIntrinsicContentSize()
+          self.needsLayout = true
+          result(nil)
+        } else { result(FlutterError(code: "bad_args", message: "Missing height args", details: nil)) }
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -178,6 +230,29 @@ class CupertinoTabBarNSView: NSView {
           }
         }
         control.setImage(image, forSegment: i)
+      }
+    }
+  }
+
+  private func applyLabelFont() {
+    let count = control.segmentCount
+    guard count > 0 else { return }
+
+    let usesCustomFont = labelFontFamily != nil || labelFontSize > 0
+    let size = labelFontSize > 0 ? labelFontSize : NSFont.systemFontSize(for: .small)
+    let font = labelFontFamily.flatMap { NSFont(name: $0, size: size) } ?? NSFont.systemFont(ofSize: size)
+    let attrs: [NSAttributedString.Key: Any] = [.font: font]
+
+    for index in 0..<count {
+      guard control.image(forSegment: index) == nil else { continue }
+      let label = index < currentLabels.count ? currentLabels[index] : ""
+      if usesCustomFont {
+        control.setAttributedLabel(
+          NSAttributedString(string: label, attributes: attrs),
+          forSegment: index,
+        )
+      } else {
+        control.setLabel(label, forSegment: index)
       }
     }
   }

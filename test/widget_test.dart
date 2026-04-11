@@ -679,6 +679,44 @@ void main() {
       expect(find.byType(CupertinoTabBar), findsOneWidget);
     });
 
+    testWidgets(
+      'supports label-only tabs and labelFontSize without a custom font family',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: CNTabBar(
+                items: const [
+                  CNTabBarItem(label: 'Home'),
+                  CNTabBarItem(label: 'Profile'),
+                ],
+                currentIndex: 0,
+                onTap: (_) {},
+                height: 72,
+                labelFontSize: 14,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+
+        expect(find.byType(CupertinoTabBar), findsOneWidget);
+        expect(find.byIcon(CupertinoIcons.circle), findsNothing);
+        expect(tester.getSize(find.byType(CupertinoTabBar)).height, 72);
+
+        final themes = tester.widgetList<CupertinoTheme>(
+          find.byType(CupertinoTheme),
+        );
+        expect(
+          themes.any(
+            (theme) => theme.data.textTheme.tabLabelTextStyle.fontSize == 14,
+          ),
+          isTrue,
+        );
+      },
+    );
+
     testWidgets('handles tab selection', (tester) async {
       var selectedIndex = 0;
 
