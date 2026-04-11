@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../channel/params.dart';
 import '../style/sf_symbol.dart';
+import '../utils/platform_view_host.dart';
 import '../utils/version_detector.dart';
 import '../utils/theme_helper.dart';
 
@@ -194,20 +195,15 @@ class _CNSegmentedControlState extends State<CNSegmentedControl> {
 
     if (widget.shrinkWrap) {
       final width = _intrinsicWidth;
-      return Center(
-        child: ClipRect(
-          child: SizedBox(
-            height: widget.height,
-            width: width, // if null, stretches initially until measured
-            child: platformView,
-          ),
-        ),
+      return PlatformViewHost(
+        height: widget.height,
+        width: width,
+        centerChild: true,
+        child: platformView,
       );
     }
 
-    return ClipRect(
-      child: SizedBox(height: widget.height, child: platformView),
-    );
+    return PlatformViewHost(height: widget.height, child: platformView);
   }
 
   void _onPlatformViewCreated(int id) {

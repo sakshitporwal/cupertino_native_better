@@ -7,6 +7,7 @@ import '../style/sf_symbol.dart';
 import '../style/tab_bar_search_item.dart';
 import '../utils/icon_renderer.dart';
 import '../utils/platform_view_guard.dart';
+import '../utils/platform_view_host.dart';
 import '../utils/version_detector.dart';
 import '../utils/theme_helper.dart';
 import 'icon.dart';
@@ -624,13 +625,10 @@ class _CNTabBarState extends State<CNTabBar> {
     final h = widget.height ?? _intrinsicHeight ?? 50.0;
     if (!widget.split && widget.shrinkCentered) {
       final w = _intrinsicWidth;
-      return ClipRect(
-        child: SizedBox(height: h, width: w, child: platformView),
-      );
+      return PlatformViewHost(height: h, width: w, child: platformView);
     }
-    return ClipRect(
-      child: SizedBox(height: h, child: platformView),
-    );
+
+    return PlatformViewHost(height: h, child: platformView);
   }
 
   void _onCreated(int id) {
@@ -659,6 +657,7 @@ class _CNTabBarState extends State<CNTabBar> {
             await _channel?.invokeMethod('setSelectedIndex', {
               'index': widget.currentIndex,
             });
+            await _requestIntrinsicSize();
           } catch (e) {
             // Ignore MissingPluginException during hot reload or view recreation
           }
@@ -671,6 +670,7 @@ class _CNTabBarState extends State<CNTabBar> {
             await _channel?.invokeMethod('setSelectedIndex', {
               'index': widget.currentIndex,
             });
+            await _requestIntrinsicSize();
           } catch (e) {
             // Ignore when platform view is being recreated
           }

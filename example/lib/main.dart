@@ -14,6 +14,7 @@ import 'demos/native_tab_bar_demo.dart';
 import 'demos/bottom_nav_test.dart';
 import 'demos/bottom_nav_indexed_test.dart';
 import 'demos/bottom_nav_custom_icons_test.dart';
+import 'demos/sliver_tests.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -220,7 +221,9 @@ class HomePage extends StatelessWidget {
                 trailing: CupertinoListTileChevron(),
                 onTap: () {
                   Navigator.of(context).push(
-                    CupertinoPageRoute(builder: (_) => const NativeTabBarDemoPage()),
+                    CupertinoPageRoute(
+                      builder: (_) => const NativeTabBarDemoPage(),
+                    ),
                   );
                 },
               ),
@@ -294,37 +297,55 @@ class HomePage extends StatelessWidget {
                 trailing: CupertinoListTileChevron(),
                 onTap: () {
                   Navigator.of(context).push(
-                    CupertinoPageRoute(builder: (_) => const BottomNavTestPage()),
+                    CupertinoPageRoute(
+                      builder: (_) => const BottomNavTestPage(),
+                    ),
                   );
                 },
               ),
               CupertinoListTile(
                 title: Text('Bottom Nav Test (IndexedStack)'),
                 leading: CNIcon(
-                  symbol: CNSymbol(
-                    'square.stack.3d.up',
-                    color: accentColor,
-                  ),
+                  symbol: CNSymbol('square.stack.3d.up', color: accentColor),
                 ),
                 trailing: CupertinoListTileChevron(),
                 onTap: () {
                   Navigator.of(context).push(
-                    CupertinoPageRoute(builder: (_) => const BottomNavIndexedTestPage()),
+                    CupertinoPageRoute(
+                      builder: (_) => const BottomNavIndexedTestPage(),
+                    ),
                   );
                 },
               ),
               CupertinoListTile(
                 title: Text('Bottom Nav Test (Custom Icons)'),
                 leading: CNIcon(
-                  symbol: CNSymbol(
-                    'photo.artframe',
-                    color: accentColor,
-                  ),
+                  symbol: CNSymbol('photo.artframe', color: accentColor),
                 ),
                 trailing: CupertinoListTileChevron(),
                 onTap: () {
                   Navigator.of(context).push(
-                    CupertinoPageRoute(builder: (_) => const BottomNavCustomIconsTestPage()),
+                    CupertinoPageRoute(
+                      builder: (_) => const BottomNavCustomIconsTestPage(),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          CupertinoListSection.insetGrouped(
+            header: Text('Sliver Tests'),
+            children: [
+              CupertinoListTile(
+                title: Text('Platform Views in Slivers'),
+                subtitle: Text('CNTabBar and CNSegmentedControl'),
+                leading: CNIcon(
+                  symbol: CNSymbol('rectangle.3.group', color: accentColor),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(builder: (_) => const SliverTestsPage()),
                   );
                 },
               ),

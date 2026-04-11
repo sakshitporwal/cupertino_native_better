@@ -2,12 +2,26 @@ import Flutter
 import UIKit
 import SVGKit
 
+private final class TabBarContainerView: UIView {
+  var onBoundsChange: ((CGRect) -> Void)?
+  private var lastReportedBounds: CGRect = .zero
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    guard bounds.integral != lastReportedBounds.integral else { return }
+    lastReportedBounds = bounds
+    onBoundsChange?(bounds)
+  }
+}
+
 class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelegate {
   private let channel: FlutterMethodChannel
-  private let container: UIView
+  private let container: TabBarContainerView
   private var tabBar: UITabBar?
   private var tabBarLeft: UITabBar?
   private var tabBarRight: UITabBar?
+  private var lastKnownContainerWidth: CGFloat = 0
+  private var layoutRefreshScheduled = false
   
   // MARK: - State Properties
   private var isSplit: Bool = false
@@ -34,7 +48,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
-    self.container = UIView(frame: frame)
+    self.container = TabBarContainerView(frame: frame)
 
     var labels: [String] = []
     var symbols: [String] = []
@@ -106,6 +120,10 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     }
 
     super.init()
+
+    container.onBoundsChange = { [weak self] bounds in
+      self?.handleContainerBoundsChange(bounds)
+    }
 
     container.backgroundColor = .clear
     // On iOS 26+, the Liquid Glass tab bar needs to overflow slightly for the pill effect
@@ -846,95 +864,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           result(nil)
         } else { result(FlutterError(code: "bad_args", message: "Missing font args", details: nil)) }
       case "refresh":
-        // Force refresh for label rendering on iOS < 16
-        // UITabBar only fully layouts labels when items are selected
-        // So we need to temporarily select each item to force layout
-        if let bar = self.tabBar, let items = bar.items, !items.isEmpty {
-          let originalSelected = bar.selectedItem
-          // Temporarily remove delegate to prevent callbacks during refresh
-          bar.delegate = nil
-          DispatchQueue.main.async { [weak self, weak bar, weak originalSelected] in
-            guard let self = self, let bar = bar, let items = bar.items, !items.isEmpty else { return }
-            // Cycle through each item to force label layout
-            var index = 0
-            func selectNext() {
-              guard index < items.count else {
-                // Restore original selection
-                if let original = originalSelected {
-                  bar.selectedItem = original
-                } else {
-                  bar.selectedItem = items.first
-                }
-                bar.setNeedsLayout()
-                bar.layoutIfNeeded()
-                // Restore delegate
-                bar.delegate = self
-                return
-              }
-              bar.selectedItem = items[index]
-              bar.setNeedsLayout()
-              bar.layoutIfNeeded()
-              index += 1
-              DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
-                selectNext()
-              }
-            }
-            selectNext()
-          }
-        } else if let left = self.tabBarLeft, let right = self.tabBarRight {
-          let leftOriginal = left.selectedItem
-          let rightOriginal = right.selectedItem
-          // Temporarily remove delegates to prevent callbacks during refresh
-          left.delegate = nil
-          right.delegate = nil
-          DispatchQueue.main.async { [weak self, weak left, weak right, weak leftOriginal, weak rightOriginal] in
-            guard let self = self, let left = left, let right = right,
-                  let leftItems = left.items, let rightItems = right.items else { return }
-            
-            // Process left items
-            var leftIndex = 0
-            func selectNextLeft() {
-              if leftIndex < leftItems.count {
-                left.selectedItem = leftItems[leftIndex]
-                left.setNeedsLayout()
-                left.layoutIfNeeded()
-                leftIndex += 1
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
-                  selectNextLeft()
-                }
-              } else {
-                // Restore original selection (nil means no selection on this bar)
-                left.selectedItem = leftOriginal
-                left.setNeedsLayout()
-                left.layoutIfNeeded()
-
-                // Process right items
-                var rightIndex = 0
-                func selectNextRight() {
-                  if rightIndex < rightItems.count {
-                    right.selectedItem = rightItems[rightIndex]
-                    right.setNeedsLayout()
-                    right.layoutIfNeeded()
-                    rightIndex += 1
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
-                      selectNextRight()
-                    }
-                  } else {
-                    // Restore original selection (nil means no selection on this bar)
-                    right.selectedItem = rightOriginal
-                    right.setNeedsLayout()
-                    right.layoutIfNeeded()
-                    // Restore delegates
-                    left.delegate = self
-                    right.delegate = self
-                  }
-                }
-                selectNextRight()
-              }
-            }
-            selectNextLeft()
-          }
-        }
+        self.refreshTabBarLayout()
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -1014,6 +944,116 @@ channel.setMethodCallHandler { [weak self] call, result in
 
   private static func createImageFromData(_ data: Data, format: String?, scale: CGFloat, size: CGSize? = nil) -> UIImage? {
     return ImageUtils.createImageFromData(data, format: format, size: size, scale: scale)
+  }
+
+  private func handleContainerBoundsChange(_ bounds: CGRect) {
+    guard bounds.width > 0, bounds.height > 0 else { return }
+    let width = bounds.width.rounded(.toNearestOrAwayFromZero)
+    guard abs(width - lastKnownContainerWidth) >= 1 else { return }
+    lastKnownContainerWidth = width
+    scheduleLayoutRefresh()
+  }
+
+  private func scheduleLayoutRefresh() {
+    guard !layoutRefreshScheduled else { return }
+    layoutRefreshScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      self.layoutRefreshScheduled = false
+      self.refreshTabBarLayout()
+    }
+  }
+
+  private func refreshTabBarLayout() {
+    // Force refresh for label rendering after the view receives its final bounds.
+    if let bar = self.tabBar, let items = bar.items, !items.isEmpty {
+      let originalSelected = bar.selectedItem
+      bar.delegate = nil
+      DispatchQueue.main.async { [weak self, weak bar, weak originalSelected] in
+        guard let self = self, let bar = bar, let items = bar.items, !items.isEmpty else { return }
+        self.container.setNeedsLayout()
+        self.container.layoutIfNeeded()
+        var index = 0
+        func selectNext() {
+          guard index < items.count else {
+            if let original = originalSelected {
+              bar.selectedItem = original
+            } else {
+              bar.selectedItem = items.first
+            }
+            bar.setNeedsDisplay()
+            bar.setNeedsLayout()
+            bar.layoutIfNeeded()
+            bar.delegate = self
+            return
+          }
+          bar.selectedItem = items[index]
+          bar.setNeedsLayout()
+          bar.layoutIfNeeded()
+          index += 1
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+            selectNext()
+          }
+        }
+        selectNext()
+      }
+      return
+    }
+
+    if let left = self.tabBarLeft, let right = self.tabBarRight {
+      let leftOriginal = left.selectedItem
+      let rightOriginal = right.selectedItem
+      left.delegate = nil
+      right.delegate = nil
+      DispatchQueue.main.async { [weak self, weak left, weak right, weak leftOriginal, weak rightOriginal] in
+        guard let self = self, let left = left, let right = right,
+              let leftItems = left.items, let rightItems = right.items else { return }
+        self.container.setNeedsLayout()
+        self.container.layoutIfNeeded()
+
+        var leftIndex = 0
+        func selectNextLeft() {
+          if leftIndex < leftItems.count {
+            left.selectedItem = leftItems[leftIndex]
+            left.setNeedsLayout()
+            left.layoutIfNeeded()
+            leftIndex += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+              selectNextLeft()
+            }
+          } else {
+            left.selectedItem = leftOriginal
+            left.setNeedsLayout()
+            left.layoutIfNeeded()
+
+            var rightIndex = 0
+            func selectNextRight() {
+              if rightIndex < rightItems.count {
+                right.selectedItem = rightItems[rightIndex]
+                right.setNeedsLayout()
+                right.layoutIfNeeded()
+                rightIndex += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                  selectNextRight()
+                }
+              } else {
+                right.selectedItem = rightOriginal
+                right.setNeedsDisplay()
+                right.setNeedsLayout()
+                right.layoutIfNeeded()
+                left.setNeedsDisplay()
+                left.setNeedsLayout()
+                left.layoutIfNeeded()
+                left.delegate = self
+                right.delegate = self
+              }
+            }
+            selectNextRight()
+          }
+        }
+        selectNextLeft()
+      }
+    }
   }
 
 }
