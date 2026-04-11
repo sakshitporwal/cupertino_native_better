@@ -11,6 +11,7 @@ class PopupMenuButtonDemoPage extends StatefulWidget {
 
 class _PopupMenuButtonDemoPageState extends State<PopupMenuButtonDemoPage> {
   int? _lastSelected;
+  List<int>? _lastSelectedPath;
   bool _useAlternateSvgIcons = false;
 
   @override
@@ -177,6 +178,71 @@ class _PopupMenuButtonDemoPageState extends State<PopupMenuButtonDemoPage> {
       ),
     ];
 
+    final nestedItems = [
+      CNPopupMenuItem(
+        label: 'Open',
+        icon: const CNSymbol('arrow.up.right.square', size: 18),
+      ),
+      CNPopupMenuSubmenu(
+        label: 'Share',
+        icon: const CNSymbol('square.and.arrow.up', size: 18),
+        items: [
+          CNPopupMenuItem(
+            label: 'Messages',
+            icon: const CNSymbol('message', size: 18),
+          ),
+          CNPopupMenuItem(
+            label: 'Mail',
+            icon: const CNSymbol('envelope', size: 18),
+          ),
+          CNPopupMenuSubmenu(
+            label: 'More Apps',
+            icon: const CNSymbol('ellipsis.circle', size: 18),
+            items: [
+              CNPopupMenuItem(
+                label: 'Notes',
+                icon: const CNSymbol('note.text', size: 18),
+              ),
+              CNPopupMenuItem(
+                label: 'Reminders',
+                icon: const CNSymbol('list.bullet', size: 18),
+              ),
+            ],
+          ),
+        ],
+      ),
+      const CNPopupMenuDivider(),
+      CNPopupMenuSubmenu(
+        label: 'Move To',
+        icon: const CNSymbol('folder', size: 18),
+        items: [
+          CNPopupMenuItem(
+            label: 'Downloads',
+            icon: const CNSymbol('arrow.down.circle', size: 18),
+          ),
+          CNPopupMenuItem(
+            label: 'Archive',
+            icon: const CNSymbol('archivebox', size: 18),
+          ),
+          CNPopupMenuSubmenu(
+            label: 'Tags',
+            icon: const CNSymbol('tag', size: 18),
+            items: [
+              CNPopupMenuItem(
+                label: 'Personal',
+                icon: const CNSymbol('person', size: 18),
+              ),
+              CNPopupMenuItem(
+                label: 'Work',
+                icon: const CNSymbol('briefcase', size: 18),
+                checked: true,
+              ),
+            ],
+          ),
+        ],
+      ),
+    ];
+
     return CupertinoPageScaffold(
       navigationBar: const CupertinoNavigationBar(
         middle: Text('Popup Menu Button'),
@@ -242,6 +308,26 @@ class _PopupMenuButtonDemoPageState extends State<PopupMenuButtonDemoPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                const Text('Nested menu'),
+                const Spacer(),
+                CNPopupMenuButton.icon(
+                  buttonIcon: const CNSymbol('ellipsis.circle', size: 18),
+                  size: 44,
+                  items: nestedItems,
+                  onSelected: (index) {
+                    setState(() => _lastSelected = index);
+                  },
+                  onSelectedPath: (path) {
+                    setState(() => _lastSelectedPath = path);
+                  },
+                  buttonStyle: CNButtonStyle.glass,
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
                 Text('Custom icon button'),
                 Spacer(),
                 CNPopupMenuButton.icon(
@@ -274,10 +360,10 @@ class _PopupMenuButtonDemoPageState extends State<PopupMenuButtonDemoPage> {
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: CupertinoColors.systemBlue.withOpacity(0.1),
+                      color: CupertinoColors.systemBlue.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: CupertinoColors.systemBlue.withOpacity(0.3),
+                        color: CupertinoColors.systemBlue.withValues(alpha: 0.3),
                       ),
                     ),
                     child: Text(
@@ -544,7 +630,13 @@ class _PopupMenuButtonDemoPageState extends State<PopupMenuButtonDemoPage> {
             ),
             const SizedBox(height: 24),
             if (_lastSelected != null)
-              Center(child: Text('Selected index: $_lastSelected')),
+              Center(
+                child: Text(
+                  _lastSelectedPath == null
+                      ? 'Selected index: $_lastSelected'
+                      : 'Selected index: $_lastSelected, path: ${_lastSelectedPath!.join(' > ')}',
+                ),
+              ),
           ],
         ),
       ),

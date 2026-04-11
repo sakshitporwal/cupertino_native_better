@@ -14,6 +14,7 @@ class CupertinoPopupMenuButtonNSView: NSView {
   private var defaultModes: [String?] = []
   private var defaultPalettes: [[NSNumber]] = []
   private var defaultGradients: [NSNumber?] = []
+  private var itemTree: [[String: Any]] = []
 
   init(viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativePopupMenuButton_\(viewId)", binaryMessenger: messenger)
@@ -53,6 +54,7 @@ class CupertinoPopupMenuButtonNSView: NSView {
       if let modes = dict["sfSymbolRenderingModes"] as? [String?] { self.defaultModes = modes }
       if let palettes = dict["sfSymbolPaletteColors"] as? [[NSNumber]] { self.defaultPalettes = palettes }
       if let gradients = dict["sfSymbolGradientEnabled"] as? [NSNumber?] { self.defaultGradients = gradients }
+      if let tree = dict["itemTree"] as? [[String: Any]] { self.itemTree = tree }
       if let m = dict["buttonIconRenderingMode"] as? String { buttonIconMode = m }
       if let pal = dict["buttonIconPaletteColors"] as? [NSNumber] { buttonIconPalette = pal }
       sizes = (dict["sfSymbolSizes"] as? [NSNumber]) ?? []
@@ -158,6 +160,7 @@ class CupertinoPopupMenuButtonNSView: NSView {
           self.defaultModes = (args["sfSymbolRenderingModes"] as? [String?]) ?? []
           self.defaultPalettes = (args["sfSymbolPaletteColors"] as? [[NSNumber]]) ?? []
           self.defaultGradients = (args["sfSymbolGradientEnabled"] as? [NSNumber?]) ?? []
+          self.itemTree = (args["itemTree"] as? [[String: Any]]) ?? []
           self.rebuildMenu(defaultSizes: self.defaultSizes, defaultColors: self.defaultColors)
           result(nil)
         } else { result(FlutterError(code: "bad_args", message: "Missing items", details: nil)) }
@@ -257,6 +260,10 @@ class CupertinoPopupMenuButtonNSView: NSView {
 
   private func rebuildMenu(defaultSizes: [NSNumber]? = nil, defaultColors: [NSNumber]? = nil) {
     popupMenu = NSMenu()
+    if !itemTree.isEmpty {
+      populate(menu: popupMenu, with: itemTree)
+      return
+    }
     let count = max(labels.count, max(symbols.count, dividers.count))
     for i in 0..<count {
       if i < dividers.count, dividers[i] {
@@ -314,8 +321,121 @@ class CupertinoPopupMenuButtonNSView: NSView {
     }
   }
 
+  private func populate(menu: NSMenu, with nodes: [[String: Any]]) {
+    for node in nodes {
+      let type = (node["type"] as? String) ?? "item"
+      if type == "divider" {
+        menu.addItem(.separator())
+        continue
+      }
+      if let item = makeMenuItem(from: node) {
+        menu.addItem(item)
+      }
+    }
+  }
+
+  private func makeMenuItem(from node: [String: Any]) -> NSMenuItem? {
+    let type = (node["type"] as? String) ?? "item"
+    let title = (node["label"] as? String) ?? ""
+    let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    item.isEnabled = (node["enabled"] as? NSNumber)?.boolValue ?? true
+    item.image = makeMenuImage(from: node)
+
+    if type == "submenu" {
+      let submenu = NSMenu(title: title)
+      populate(menu: submenu, with: (node["children"] as? [[String: Any]]) ?? [])
+      item.submenu = submenu
+      return item
+    }
+
+    guard type == "item" else { return nil }
+    item.target = self
+    item.action = #selector(onSelectMenuItem(_:))
+    if let index = (node["legacyIndex"] as? NSNumber)?.intValue {
+      item.tag = index
+    }
+    if let path = node["selectionPath"] as? [NSNumber] {
+      item.representedObject = path.map { $0.intValue }
+    } else if let path = node["selectionPath"] as? [Int] {
+      item.representedObject = path
+    }
+    if (node["checked"] as? NSNumber)?.boolValue ?? false {
+      item.state = .on
+    }
+    return item
+  }
+
+  private func makeMenuImage(from node: [String: Any]) -> NSImage? {
+    var image: NSImage? = nil
+
+    if let assetPath = node["imageAssetPath"] as? String, !assetPath.isEmpty {
+      image = NSImage(contentsOfFile: assetPath)
+    } else if let data = (node["imageAssetData"] as? FlutterStandardTypedData)?.data {
+      image = NSImage(data: data)
+    } else if let data = (node["customIconBytes"] as? FlutterStandardTypedData)?.data {
+      image = NSImage(data: data)
+      if let colorNum = node["customIconColor"] as? NSNumber {
+        image = image?.tinted(with: Self.colorFromARGB(colorNum.intValue))
+      }
+    } else if let symbolName = node["sfSymbol"] as? String, !symbolName.isEmpty {
+      image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+    }
+
+    if let sizeNum = node["sfSymbolSize"] as? NSNumber {
+      let size = CGFloat(truncating: sizeNum)
+      if size > 0 {
+        image?.size = NSSize(width: size, height: size)
+      }
+    }
+
+    if let symbolName = node["sfSymbol"] as? String,
+       !symbolName.isEmpty,
+       var symbolImage = image {
+      if let sizeNum = node["sfSymbolSize"] as? NSNumber, #available(macOS 12.0, *) {
+        let cfg = NSImage.SymbolConfiguration(pointSize: CGFloat(truncating: sizeNum), weight: .regular)
+        symbolImage = symbolImage.withSymbolConfiguration(cfg) ?? symbolImage
+      }
+      if let mode = node["sfSymbolRenderingMode"] as? String {
+        switch mode {
+        case "hierarchical":
+          if #available(macOS 12.0, *), let colorNum = node["sfSymbolColor"] as? NSNumber {
+            let cfg = NSImage.SymbolConfiguration(hierarchicalColor: Self.colorFromARGB(colorNum.intValue))
+            symbolImage = symbolImage.withSymbolConfiguration(cfg) ?? symbolImage
+          }
+        case "palette":
+          if #available(macOS 12.0, *), let palette = node["sfSymbolPaletteColors"] as? [NSNumber], !palette.isEmpty {
+            let cfg = NSImage.SymbolConfiguration(paletteColors: palette.map { Self.colorFromARGB($0.intValue) })
+            symbolImage = symbolImage.withSymbolConfiguration(cfg) ?? symbolImage
+          }
+        case "multicolor":
+          if #available(macOS 12.0, *) {
+            let cfg = NSImage.SymbolConfiguration.preferringMulticolor()
+            symbolImage = symbolImage.withSymbolConfiguration(cfg) ?? symbolImage
+          }
+        case "monochrome":
+          if let colorNum = node["sfSymbolColor"] as? NSNumber {
+            symbolImage = symbolImage.tinted(with: Self.colorFromARGB(colorNum.intValue))
+          }
+        default:
+          break
+        }
+      } else if let colorNum = node["sfSymbolColor"] as? NSNumber {
+        symbolImage = symbolImage.tinted(with: Self.colorFromARGB(colorNum.intValue))
+      }
+      image = symbolImage
+    } else if let colorNum = node["sfSymbolColor"] as? NSNumber {
+      image = image?.tinted(with: Self.colorFromARGB(colorNum.intValue))
+    }
+
+    return image
+  }
+
   @objc private func onSelectMenuItem(_ sender: NSMenuItem) {
-    channel.invokeMethod("itemSelected", arguments: ["index": sender.tag])
+    var args: [String: Any] = ["index": sender.tag]
+    if let path = sender.representedObject as? [Int] {
+      args["selectionPath"] = path
+    }
+    channel.invokeMethod("itemSelected", arguments: args)
   }
 
   private static func colorFromARGB(_ argb: Int) -> NSColor {

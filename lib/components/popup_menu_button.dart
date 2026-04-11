@@ -62,6 +62,45 @@ class CNPopupMenuDivider extends CNPopupMenuEntry {
   const CNPopupMenuDivider();
 }
 
+/// A nested submenu in a popup menu.
+class CNPopupMenuSubmenu extends CNPopupMenuEntry {
+  /// Creates a submenu with nested [items].
+  const CNPopupMenuSubmenu({
+    required this.label,
+    required this.items,
+    this.icon,
+    this.customIcon,
+    this.imageAsset,
+    this.iconColor,
+    this.enabled = true,
+  });
+
+  /// Display label for the submenu.
+  final String label;
+
+  /// Nested entries shown when the submenu is opened.
+  final List<CNPopupMenuEntry> items;
+
+  /// Optional SF Symbol shown before the label.
+  /// Priority: [imageAsset] > [customIcon] > [icon]
+  final CNSymbol? icon;
+
+  /// Optional custom icon from CupertinoIcons, Icons, or any IconData.
+  /// If provided, this takes precedence over [icon] but not [imageAsset].
+  final IconData? customIcon;
+
+  /// Optional image asset (SVG, PNG, etc.) shown before the label.
+  /// If provided, this takes precedence over [icon] and [customIcon].
+  final CNImageAsset? imageAsset;
+
+  /// Optional color for custom icons. This applies a tint color to the custom icon.
+  /// For SF Symbols, use the [icon]'s color parameter instead.
+  final Color? iconColor;
+
+  /// Whether the submenu can be opened.
+  final bool enabled;
+}
+
 // Reusable style enum for buttons across widgets (popup menu, future CNButton, ...)
 
 /// A Cupertino-native popup menu button.
@@ -74,6 +113,7 @@ class CNPopupMenuButton extends StatefulWidget {
     required this.buttonLabel,
     required this.items,
     required this.onSelected,
+    this.onSelectedPath,
     this.tint,
     this.height = 32.0,
     this.shrinkWrap = false,
@@ -95,6 +135,7 @@ class CNPopupMenuButton extends StatefulWidget {
     this.buttonImageAsset,
     required this.items,
     required this.onSelected,
+    this.onSelectedPath,
     this.tint,
     double size = 44.0, // button diameter (width = height)
     this.buttonStyle = CNButtonStyle.glass,
@@ -143,6 +184,13 @@ class CNPopupMenuButton extends StatefulWidget {
 
   /// Called with the selected index when the user makes a selection.
   final ValueChanged<int> onSelected;
+
+  /// Called with the structural path to the selected item.
+  ///
+  /// This is especially useful for nested menus, where the flat legacy index
+  /// provided to [onSelected] is deterministic but less descriptive than the
+  /// item path, for example `[2, 1]`.
+  final ValueChanged<List<int>>? onSelectedPath;
 
   /// Tint color for the control.
   final Color? tint;
@@ -228,12 +276,12 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     // Check if we need to render custom icons or image assets
     final hasCustomButtonIcon = widget.buttonCustomIcon != null;
     final hasButtonImageAsset = widget.buttonImageAsset != null;
-    final hasCustomMenuIcons = widget.items.any(
-      (e) => e is CNPopupMenuItem && e.customIcon != null,
-    );
-    final hasMenuImageAssets = widget.items.any(
-      (e) => e is CNPopupMenuItem && e.imageAsset != null,
-    );
+    final hasCustomMenuIcons = _walkMenuEntries(
+      widget.items,
+    ).any((e) => _menuEntryCustomIcon(e) != null);
+    final hasMenuImageAssets = _walkMenuEntries(
+      widget.items,
+    ).any((e) => _menuEntryImageAsset(e) != null);
 
     if (hasCustomButtonIcon ||
         hasCustomMenuIcons ||
@@ -242,12 +290,12 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       // Create a key that changes when button or menu icons change
       final buttonIconKey =
           '${widget.buttonImageAsset?.assetPath}_${widget.buttonImageAsset?.imageData?.length ?? 0}_${widget.buttonCustomIcon?.hashCode ?? 0}_${widget.buttonCustomIconColor?.toARGB32() ?? 0}';
-      final menuIconsKey = widget.items
+      final menuIconsKey = _walkMenuEntries(widget.items)
           .map((e) {
-            if (e is CNPopupMenuItem) {
-              return '${e.imageAsset?.assetPath}_${e.imageAsset?.imageData?.length ?? 0}_${e.customIcon?.hashCode ?? 0}_${e.iconColor?.toARGB32() ?? 0}';
-            }
-            return '';
+            final imageAsset = _menuEntryImageAsset(e);
+            final customIcon = _menuEntryCustomIcon(e);
+            final customIconColor = _menuEntryCustomIconColor(e);
+            return '${imageAsset?.assetPath}_${imageAsset?.imageData?.length ?? 0}_${customIcon?.hashCode ?? 0}_${customIconColor?.toARGB32() ?? 0}';
           })
           .join('|');
       return FutureBuilder<Map<String, dynamic>>(
@@ -286,7 +334,10 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
 
   Future<Map<String, dynamic>> _renderCustomIcons(BuildContext context) async {
     Uint8List? buttonIconBytes;
-    final menuIconBytes = <Uint8List?>[];
+    final menuIconBytes = await _renderMenuEntryCustomIcons(
+      context,
+      widget.items,
+    );
 
     // Handle button icon - imageAsset takes precedence over customIcon
     if (widget.buttonImageAsset != null) {
@@ -300,28 +351,31 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       );
     }
 
-    // Handle menu item icons - imageAsset takes precedence over customIcon
-    for (final e in widget.items) {
-      if (e is CNPopupMenuDivider) {
-        menuIconBytes.add(null);
-      } else if (e is CNPopupMenuItem) {
-        if (e.imageAsset != null) {
-          // ImageAsset doesn't need async rendering, it's already data
-          menuIconBytes.add(null); // Will be handled in _buildNativePopupMenu
-        } else if (e.customIcon != null) {
-          final bytes = await iconDataToImageBytes(
-            e.customIcon!,
-            size: e.icon?.size ?? 20.0,
-            color: e.iconColor ?? CupertinoColors.label,
-          );
-          menuIconBytes.add(bytes);
-        } else {
-          menuIconBytes.add(null);
-        }
-      }
-    }
-
     return {'buttonIconBytes': buttonIconBytes, 'menuIconBytes': menuIconBytes};
+  }
+
+  Future<List<Uint8List?>> _renderMenuEntryCustomIcons(
+    BuildContext context,
+    List<CNPopupMenuEntry> entries,
+  ) async {
+    final rendered = <Uint8List?>[];
+    for (final entry in _walkMenuEntries(entries)) {
+      final imageAsset = _menuEntryImageAsset(entry);
+      final customIcon = _menuEntryCustomIcon(entry);
+      final symbol = _menuEntrySymbol(entry);
+      final customIconColor = _menuEntryCustomIconColor(entry);
+      if (imageAsset != null || customIcon == null) {
+        continue;
+      }
+      rendered.add(
+        await iconDataToImageBytes(
+          customIcon,
+          size: symbol?.size ?? 20.0,
+          color: customIconColor ?? CupertinoColors.label,
+        ),
+      );
+    }
+    return rendered;
   }
 
   Future<Widget> _buildNativePopupMenu(
@@ -348,6 +402,21 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final capturedMenuItemPalettes = <List<int?>?>[];
     for (final item in widget.items) {
       if (item is CNPopupMenuItem) {
+        capturedMenuItemIconColors.add(
+          resolveColorToArgb(item.iconColor, context),
+        );
+        capturedMenuItemColors.add(
+          resolveColorToArgb(
+            item.imageAsset?.color ?? item.icon?.color,
+            context,
+          ),
+        );
+        capturedMenuItemPalettes.add(
+          item.icon?.paletteColors
+              ?.map((c) => resolveColorToArgb(c, context))
+              .toList(),
+        );
+      } else if (item is CNPopupMenuSubmenu) {
         capturedMenuItemIconColors.add(
           resolveColorToArgb(item.iconColor, context),
         );
@@ -393,6 +462,12 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final buttonIconBytes = customIconData?['buttonIconBytes'] as Uint8List?;
     final menuIconBytes =
         customIconData?['menuIconBytes'] as List<Uint8List?>? ?? [];
+    if (!context.mounted) return const SizedBox();
+    final itemTree = await _serializeMenuEntries(
+      context,
+      widget.items,
+      customIconBytes: menuIconBytes,
+    );
 
     // Flatten entries into parallel arrays for the platform view.
     final labels = <String>[];
@@ -411,7 +486,6 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final palettes = <List<int?>?>[];
     final gradients = <bool?>[];
 
-    var menuIconIndex = 0;
     for (var i = 0; i < widget.items.length; i++) {
       final e = widget.items[i];
       if (e is CNPopupMenuDivider) {
@@ -433,11 +507,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       } else if (e is CNPopupMenuItem) {
         labels.add(e.label);
         symbols.add(e.icon?.name ?? '');
-        customIconBytesArray.add(
-          menuIconIndex < menuIconBytes.length
-              ? menuIconBytes[menuIconIndex]
-              : null,
-        );
+        customIconBytesArray.add(null);
         customIconColors.add(capturedMenuItemIconColors[i]);
 
         // Handle imageAsset for menu items
@@ -466,7 +536,37 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
         modes.add(e.imageAsset?.mode?.name ?? e.icon?.mode?.name);
         palettes.add(capturedMenuItemPalettes[i]);
         gradients.add(e.imageAsset?.gradient ?? e.icon?.gradient);
-        menuIconIndex++;
+      } else if (e is CNPopupMenuSubmenu) {
+        labels.add(e.label);
+        symbols.add(e.icon?.name ?? '');
+        customIconBytesArray.add(null);
+        customIconColors.add(capturedMenuItemIconColors[i]);
+
+        if (e.imageAsset != null) {
+          final resolvedPath = await resolveAssetPathForPixelRatio(
+            e.imageAsset!.assetPath,
+          );
+          imageAssetPaths.add(resolvedPath);
+          imageAssetData.add(e.imageAsset!.imageData);
+          imageAssetFormats.add(
+            e.imageAsset!.imageFormat ??
+                detectImageFormat(resolvedPath, e.imageAsset!.imageData) ??
+                '',
+          );
+        } else {
+          imageAssetPaths.add('');
+          imageAssetData.add(null);
+          imageAssetFormats.add('');
+        }
+
+        isDivider.add(false);
+        enabled.add(e.enabled);
+        checked.add(false);
+        sizes.add(e.imageAsset?.size ?? e.icon?.size);
+        colors.add(capturedMenuItemColors[i]);
+        modes.add(e.imageAsset?.mode?.name ?? e.icon?.mode?.name);
+        palettes.add(capturedMenuItemPalettes[i]);
+        gradients.add(e.imageAsset?.gradient ?? e.icon?.gradient);
       }
     }
 
@@ -509,6 +609,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       'sfSymbolRenderingModes': modes,
       'sfSymbolPaletteColors': palettes,
       'sfSymbolGradientEnabled': gradients,
+      'itemTree': itemTree,
       'isDark': capturedIsDark,
       'style': capturedStyle,
       if (widget.buttonIcon?.mode != null)
@@ -524,12 +625,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final buttonIconKey =
         '${widget.buttonLabel}_${widget.buttonIcon?.name}_${widget.buttonImageAsset?.assetPath}_${widget.buttonImageAsset?.imageData?.length ?? 0}_${widget.buttonCustomIcon?.hashCode ?? 0}';
     final itemsKey = widget.items
-        .map((e) {
-          if (e is CNPopupMenuItem) {
-            return '${e.label}_${e.icon?.name}_${e.imageAsset?.assetPath}_${e.imageAsset?.imageData?.length ?? 0}_${e.customIcon?.hashCode ?? 0}';
-          }
-          return 'divider';
-        })
+        .map(_menuEntryCacheKey)
         .join('|');
     final viewKey = ValueKey(
       'popupMenu_'
@@ -631,6 +727,12 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     if (call.method == 'itemSelected') {
       final args = call.arguments as Map?;
       final idx = (args?['index'] as num?)?.toInt();
+      final selectionPath = (args?['selectionPath'] as List?)
+          ?.map((value) => (value as num).toInt())
+          .toList(growable: false);
+      if (selectionPath != null) {
+        widget.onSelectedPath?.call(selectionPath);
+      }
       if (idx != null) widget.onSelected(idx);
     }
     return null;
@@ -665,6 +767,11 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final updImageAssetPaths = <String>[];
     final updImageAssetData = <Uint8List?>[];
     final updImageAssetFormats = <String>[];
+    final buildContext = context;
+    final tint = resolveColorToArgb(_effectiveTint, context);
+    final preIconName = widget.buttonIcon?.name;
+    final preIconSize = widget.buttonIcon?.size;
+    final preIconColor = resolveColorToArgb(widget.buttonIcon?.color, context);
     for (final e in widget.items) {
       if (e is CNPopupMenuDivider) {
         updLabels.add('');
@@ -716,13 +823,56 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
           updImageAssetData.add(null);
           updImageAssetFormats.add('');
         }
+      } else if (e is CNPopupMenuSubmenu) {
+        updLabels.add(e.label);
+        updSymbols.add(e.icon?.name ?? '');
+        updIsDivider.add(false);
+        updEnabled.add(e.enabled);
+        updChecked.add(false);
+        updSizes.add(e.imageAsset?.size ?? e.icon?.size);
+        updColors.add(
+          resolveColorToArgb(
+            e.imageAsset?.color ?? e.icon?.color,
+            context,
+          ),
+        );
+        updModes.add(e.imageAsset?.mode?.name ?? e.icon?.mode?.name);
+        updPalettes.add(
+          e.icon?.paletteColors
+              ?.map((c) => resolveColorToArgb(c, context))
+              .toList(),
+        );
+        updGradients.add(e.imageAsset?.gradient ?? e.icon?.gradient);
+
+        if (e.imageAsset != null) {
+          updImageAssetPaths.add(e.imageAsset!.assetPath);
+          updImageAssetData.add(e.imageAsset!.imageData);
+          updImageAssetFormats.add(
+            e.imageAsset!.imageFormat ??
+                detectImageFormat(
+                  e.imageAsset!.assetPath,
+                  e.imageAsset!.imageData,
+                ) ??
+                '',
+          );
+        } else {
+          updImageAssetPaths.add('');
+          updImageAssetData.add(null);
+          updImageAssetFormats.add('');
+        }
       }
     }
-    // Capture context-dependent values before any awaits
-    final tint = resolveColorToArgb(_effectiveTint, context);
-    final preIconName = widget.buttonIcon?.name;
-    final preIconSize = widget.buttonIcon?.size;
-    final preIconColor = resolveColorToArgb(widget.buttonIcon?.color, context);
+    final updMenuIconBytes = await _renderMenuEntryCustomIcons(
+      context,
+      widget.items,
+    );
+    if (!context.mounted) return;
+    final updItemTree = await _serializeMenuEntries(
+      buildContext,
+      widget.items,
+      customIconBytes: updMenuIconBytes,
+    );
+    if (!context.mounted) return;
     if (_lastTint != tint && tint != null) {
       await ch.invokeMethod('setStyle', {'tint': tint});
       _lastTint = tint;
@@ -823,6 +973,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       'imageAssetPaths': updImageAssetPaths,
       'imageAssetData': updImageAssetData,
       'imageAssetFormats': updImageAssetFormats,
+      'itemTree': updItemTree,
     });
   }
 
@@ -864,32 +1015,15 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
             ? const EdgeInsets.all(4)
             : const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         onPressed: () async {
-          final selected = await showCupertinoModalPopup<int>(
-            context: context,
-            builder: (ctx) {
-              return CupertinoActionSheet(
-                title: widget.buttonLabel != null
-                    ? Text(widget.buttonLabel!)
-                    : null,
-                actions: [
-                  for (var i = 0; i < widget.items.length; i++)
-                    if (widget.items[i] is CNPopupMenuItem)
-                      CupertinoActionSheetAction(
-                        onPressed: () => Navigator.of(ctx).pop(i),
-                        child: Text((widget.items[i] as CNPopupMenuItem).label),
-                      )
-                    else
-                      const SizedBox(height: 8),
-                ],
-                cancelButton: CupertinoActionSheetAction(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  isDefaultAction: true,
-                  child: const Text('Cancel'),
-                ),
-              );
-            },
+          final selection = await _showFallbackMenu(
+            context,
+            items: widget.items,
+            title: widget.buttonLabel,
           );
-          if (selected != null) widget.onSelected(selected);
+          if (selection != null) {
+            widget.onSelectedPath?.call(selection.selectionPath);
+            widget.onSelected(selection.legacyIndex);
+          }
         },
         child: widget.isIconButton
             ? (widget.buttonIcon != null
@@ -903,4 +1037,354 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       ),
     );
   }
+
+  Future<List<Map<String, dynamic>>> _serializeMenuEntries(
+    BuildContext context,
+    List<CNPopupMenuEntry> entries, {
+    required List<Uint8List?> customIconBytes,
+    _CNPopupMenuSerializationCursor? cursor,
+    List<int> parentPath = const [],
+  }) async {
+    final activeCursor = cursor ?? _CNPopupMenuSerializationCursor();
+    final serialized = <Map<String, dynamic>>[];
+
+    for (var index = 0; index < entries.length; index++) {
+      if (!context.mounted) return serialized;
+      final entry = entries[index];
+      final entryPath = [...parentPath, index];
+      final legacyIndex = activeCursor.legacyIndex++;
+      if (entry is CNPopupMenuDivider) {
+        serialized.add({'type': 'divider'});
+        continue;
+      }
+
+      final symbol = _menuEntrySymbol(entry);
+      final imageAsset = _menuEntryImageAsset(entry);
+      final customIconColor = _menuEntryCustomIconColor(entry);
+
+      final visuals = await _serializeMenuEntryVisuals(
+        entry,
+        customIconBytes: customIconBytes,
+        cursor: activeCursor,
+        resolvedCustomIconColor: resolveColorToArgb(customIconColor, context),
+        resolvedSymbolColor: resolveColorToArgb(
+          imageAsset?.color ?? symbol?.color,
+          context,
+        ),
+        resolvedPaletteColors: symbol?.paletteColors
+            ?.map((color) => resolveColorToArgb(color, context))
+            .toList(),
+        resolvedRenderingMode: imageAsset?.mode?.name ?? symbol?.mode?.name,
+        resolvedGradient: imageAsset?.gradient ?? symbol?.gradient,
+      );
+      if (!context.mounted) return serialized;
+
+      if (entry is CNPopupMenuItem) {
+        serialized.add({
+          'type': 'item',
+          'label': entry.label,
+          'enabled': entry.enabled,
+          'checked': entry.checked,
+          'legacyIndex': legacyIndex,
+          'selectionPath': entryPath,
+          ...visuals,
+        });
+      } else if (entry is CNPopupMenuSubmenu) {
+        serialized.add({
+          'type': 'submenu',
+          'label': entry.label,
+          'enabled': entry.enabled,
+          'children': await _serializeMenuEntries(
+            context,
+            entry.items,
+            customIconBytes: customIconBytes,
+            cursor: activeCursor,
+            parentPath: entryPath,
+          ),
+          ...visuals,
+        });
+      }
+    }
+
+    return serialized;
+  }
+
+  Future<Map<String, dynamic>> _serializeMenuEntryVisuals(
+    CNPopupMenuEntry entry, {
+    required List<Uint8List?> customIconBytes,
+    required _CNPopupMenuSerializationCursor cursor,
+    required int? resolvedCustomIconColor,
+    required int? resolvedSymbolColor,
+    required List<int?>? resolvedPaletteColors,
+    required String? resolvedRenderingMode,
+    required bool? resolvedGradient,
+  }) async {
+    final symbol = _menuEntrySymbol(entry);
+    final customIcon = _menuEntryCustomIcon(entry);
+    final imageAsset = _menuEntryImageAsset(entry);
+
+    Uint8List? renderedCustomIconBytes;
+    if (imageAsset == null && customIcon != null) {
+      if (cursor.customIconIndex < customIconBytes.length) {
+        renderedCustomIconBytes = customIconBytes[cursor.customIconIndex];
+      }
+      cursor.customIconIndex++;
+    }
+
+    String? resolvedAssetPath;
+    if (imageAsset != null && imageAsset.assetPath.isNotEmpty) {
+      resolvedAssetPath = await resolveAssetPathForPixelRatio(
+        imageAsset.assetPath,
+      );
+    }
+
+    return {
+      'sfSymbol': symbol?.name ?? '',
+      'customIconBytes': renderedCustomIconBytes,
+      'customIconColor': resolvedCustomIconColor,
+      'imageAssetPath': resolvedAssetPath ?? '',
+      'imageAssetData': imageAsset?.imageData,
+      'imageAssetFormat': imageAsset == null
+          ? ''
+          : imageAsset.imageFormat ??
+                detectImageFormat(
+                  resolvedAssetPath ?? imageAsset.assetPath,
+                  imageAsset.imageData,
+                ) ??
+                '',
+      'sfSymbolSize': imageAsset?.size ?? symbol?.size,
+      'sfSymbolColor': resolvedSymbolColor,
+      'sfSymbolRenderingMode': resolvedRenderingMode,
+      'sfSymbolPaletteColors': resolvedPaletteColors,
+      'sfSymbolGradientEnabled': resolvedGradient,
+    };
+  }
+
+  Future<_CNPopupFallbackSelection?> _showFallbackMenu(
+    BuildContext context, {
+    required List<CNPopupMenuEntry> items,
+    required String? title,
+    List<int> parentPath = const [],
+  }) async {
+    final result = await showCupertinoModalPopup<_CNPopupFallbackResult>(
+      context: context,
+      builder: (ctx) {
+        return CupertinoActionSheet(
+          title: title != null ? Text(title) : null,
+          actions: [
+            for (var i = 0; i < items.length; i++)
+              ...switch (items[i]) {
+                CNPopupMenuDivider() => [const SizedBox(height: 8)],
+                CNPopupMenuItem item => [
+                  CupertinoActionSheetAction(
+                    onPressed: item.enabled
+                        ? () {
+                            Navigator.of(ctx).pop(
+                              _CNPopupFallbackSelection(
+                                legacyIndex: _legacyIndexForPath(
+                                      widget.items,
+                                      [...parentPath, i],
+                                    ) ??
+                                    0,
+                                selectionPath: [...parentPath, i],
+                              ),
+                            );
+                          }
+                        : () {},
+                    child: DefaultTextStyle.merge(
+                      style: TextStyle(
+                        color: item.enabled
+                            ? null
+                            : CupertinoColors.inactiveGray,
+                      ),
+                      child: Text(
+                        item.checked ? '✓ ${item.label}' : item.label,
+                      ),
+                    ),
+                  ),
+                ],
+                CNPopupMenuSubmenu submenu => [
+                  CupertinoActionSheetAction(
+                    onPressed: submenu.enabled
+                        ? () {
+                            Navigator.of(ctx).pop(
+                              _CNPopupFallbackOpenSubmenu(
+                                submenu: submenu,
+                                path: [...parentPath, i],
+                              ),
+                            );
+                          }
+                        : () {},
+                    child: DefaultTextStyle.merge(
+                      style: TextStyle(
+                        color: submenu.enabled
+                            ? null
+                            : CupertinoColors.inactiveGray,
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Flexible(child: Text(submenu.label)),
+                          const Icon(CupertinoIcons.chevron_forward, size: 18),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+                _ => const <Widget>[],
+              },
+          ],
+          cancelButton: CupertinoActionSheetAction(
+            onPressed: () => Navigator.of(ctx).pop(),
+            isDefaultAction: true,
+            child: const Text('Cancel'),
+          ),
+        );
+      },
+    );
+
+    if (result is _CNPopupFallbackSelection) {
+      return result;
+    }
+    if (result is _CNPopupFallbackOpenSubmenu) {
+      if (!context.mounted) {
+        return null;
+      }
+      return _showFallbackMenu(
+        context,
+        items: result.submenu.items,
+        title: result.submenu.label,
+        parentPath: result.path,
+      );
+    }
+    return null;
+  }
+
+  int? _legacyIndexForPath(
+    List<CNPopupMenuEntry> entries,
+    List<int> targetPath, {
+    List<int> parentPath = const [],
+    int startIndex = 0,
+  }) {
+    var currentIndex = startIndex;
+    for (var i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      final currentPath = [...parentPath, i];
+      final entryIndex = currentIndex;
+      currentIndex++;
+
+      if (_pathsEqual(currentPath, targetPath)) {
+        return entry is CNPopupMenuItem ? entryIndex : null;
+      }
+
+      if (entry is CNPopupMenuSubmenu) {
+        final childResult = _legacyIndexForPath(
+          entry.items,
+          targetPath,
+          parentPath: currentPath,
+          startIndex: currentIndex,
+        );
+        if (childResult != null) {
+          return childResult;
+        }
+        currentIndex = _legacyTraversalCount(entry.items, currentIndex);
+      }
+    }
+    return null;
+  }
+
+  int _legacyTraversalCount(List<CNPopupMenuEntry> entries, int startIndex) {
+    var currentIndex = startIndex;
+    for (final entry in entries) {
+      currentIndex++;
+      if (entry is CNPopupMenuSubmenu) {
+        currentIndex = _legacyTraversalCount(entry.items, currentIndex);
+      }
+    }
+    return currentIndex;
+  }
+
+  bool _pathsEqual(List<int> lhs, List<int> rhs) {
+    if (lhs.length != rhs.length) return false;
+    for (var i = 0; i < lhs.length; i++) {
+      if (lhs[i] != rhs[i]) return false;
+    }
+    return true;
+  }
+
+  Iterable<CNPopupMenuEntry> _walkMenuEntries(List<CNPopupMenuEntry> entries) sync* {
+    for (final entry in entries) {
+      yield entry;
+      if (entry is CNPopupMenuSubmenu) {
+        yield* _walkMenuEntries(entry.items);
+      }
+    }
+  }
+
+  CNSymbol? _menuEntrySymbol(CNPopupMenuEntry entry) {
+    if (entry is CNPopupMenuItem) return entry.icon;
+    if (entry is CNPopupMenuSubmenu) return entry.icon;
+    return null;
+  }
+
+  IconData? _menuEntryCustomIcon(CNPopupMenuEntry entry) {
+    if (entry is CNPopupMenuItem) return entry.customIcon;
+    if (entry is CNPopupMenuSubmenu) return entry.customIcon;
+    return null;
+  }
+
+  CNImageAsset? _menuEntryImageAsset(CNPopupMenuEntry entry) {
+    if (entry is CNPopupMenuItem) return entry.imageAsset;
+    if (entry is CNPopupMenuSubmenu) return entry.imageAsset;
+    return null;
+  }
+
+  Color? _menuEntryCustomIconColor(CNPopupMenuEntry entry) {
+    if (entry is CNPopupMenuItem) return entry.iconColor;
+    if (entry is CNPopupMenuSubmenu) return entry.iconColor;
+    return null;
+  }
+
+  String _menuEntryCacheKey(CNPopupMenuEntry entry) {
+    if (entry is CNPopupMenuDivider) {
+      return 'divider';
+    }
+    if (entry is CNPopupMenuItem) {
+      return 'item:${entry.label}_${entry.icon?.name}_${entry.imageAsset?.assetPath}_${entry.imageAsset?.imageData?.length ?? 0}_${entry.customIcon?.hashCode ?? 0}_${entry.enabled}_${entry.checked}';
+    }
+    if (entry is CNPopupMenuSubmenu) {
+      final childKey = entry.items.map(_menuEntryCacheKey).join('|');
+      return 'submenu:${entry.label}_${entry.icon?.name}_${entry.imageAsset?.assetPath}_${entry.imageAsset?.imageData?.length ?? 0}_${entry.customIcon?.hashCode ?? 0}_${entry.enabled}[$childKey]';
+    }
+    return 'unknown';
+  }
+}
+
+class _CNPopupMenuSerializationCursor {
+  int customIconIndex = 0;
+  int legacyIndex = 0;
+}
+
+sealed class _CNPopupFallbackResult {
+  const _CNPopupFallbackResult();
+}
+
+class _CNPopupFallbackSelection extends _CNPopupFallbackResult {
+  const _CNPopupFallbackSelection({
+    required this.legacyIndex,
+    required this.selectionPath,
+  });
+
+  final int legacyIndex;
+  final List<int> selectionPath;
+}
+
+class _CNPopupFallbackOpenSubmenu extends _CNPopupFallbackResult {
+  const _CNPopupFallbackOpenSubmenu({
+    required this.submenu,
+    required this.path,
+  });
+
+  final CNPopupMenuSubmenu submenu;
+  final List<int> path;
 }

@@ -312,23 +312,26 @@ class CNNativeTabBarManager: NSObject {
     }
 
     private func notifyTabSelected(_ index: Int) {
+        // Embed the Flutter view in the new tab's container FIRST.
+        // If we notify Flutter before the view is reparented, the engine sees a
+        // zero-size frame during the removeFromSuperview → addSubview transition
+        // and emits a spurious frame (the old screen "reloading"). Embedding
+        // first ensures the view already has valid constraints when Flutter
+        // processes onTabSelected and schedules its next frame.
+        if let flutterView = flutterViewController?.view,
+           let tabBar = tabBarController {
+            var targetVC: FlutterTabViewController?
+            if let navController = tabBar.selectedViewController as? UINavigationController,
+               let rootVC = navController.topViewController as? FlutterTabViewController {
+                targetVC = rootVC
+            } else if let flutterTabVC = tabBar.selectedViewController as? FlutterTabViewController {
+                targetVC = flutterTabVC
+            }
+            targetVC?.embedFlutterView(flutterView)
+        }
+
+        // Notify Flutter only after the view is in its new home.
         methodChannel?.invokeMethod("onTabSelected", arguments: ["index": index])
-
-        guard let flutterView = flutterViewController?.view,
-              let tabBar = tabBarController else { return }
-
-        // Get the selected view controller - handle navigation controller wrapping for search tab
-        var targetVC: FlutterTabViewController?
-        if let navController = tabBar.selectedViewController as? UINavigationController,
-           let rootVC = navController.topViewController as? FlutterTabViewController {
-            targetVC = rootVC
-        } else if let flutterTabVC = tabBar.selectedViewController as? FlutterTabViewController {
-            targetVC = flutterTabVC
-        }
-
-        if let vc = targetVC {
-            vc.embedFlutterView(flutterView)
-        }
     }
 
     private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

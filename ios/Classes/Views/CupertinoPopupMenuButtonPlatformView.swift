@@ -23,6 +23,7 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
   private var itemModes: [String?] = []
   private var itemPalettes: [[NSNumber]] = []
   private var itemGradients: [NSNumber?] = []
+  private var itemTree: [[String: Any]] = []
   private var iconScale: CGFloat = UIScreen.main.scale
   private var preserveTopToBottomOrder: Bool = false
   // Track current button icon configuration to keep image across state updates
@@ -98,6 +99,7 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
       if let modes = dict["sfSymbolRenderingModes"] as? [String?] { self.itemModes = modes }
       if let palettes = dict["sfSymbolPaletteColors"] as? [[NSNumber]] { self.itemPalettes = palettes }
       if let gradients = dict["sfSymbolGradientEnabled"] as? [NSNumber?] { self.itemGradients = gradients }
+      if let tree = dict["itemTree"] as? [[String: Any]] { self.itemTree = tree }
       if let m = dict["buttonIconRenderingMode"] as? String { buttonIconMode = m }
       if let pal = dict["buttonIconPaletteColors"] as? [NSNumber] { buttonIconPalette = pal }
       if let preserve = dict["preserveTopToBottomOrder"] as? NSNumber {
@@ -198,6 +200,10 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
         if let args = call.arguments as? [String: Any] {
           self.labels = (args["labels"] as? [String]) ?? []
           self.symbols = (args["sfSymbols"] as? [String]) ?? []
+          if let bytesArray = args["customIconBytes"] as? [FlutterStandardTypedData?] {
+            self.customIconBytes = bytesArray.map { $0?.data }
+          }
+          self.customIconColors = (args["customIconColors"] as? [Any]) ?? []
           self.dividers = ((args["isDivider"] as? [NSNumber]) ?? []).map { $0.boolValue }
           self.enabled = ((args["enabled"] as? [NSNumber]) ?? []).map { $0.boolValue }
           self.checked = ((args["checked"] as? [NSNumber]) ?? []).map { $0.boolValue }
@@ -214,6 +220,7 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
             self.imageAssetData = bytesArray.map { $0?.data }
           }
           self.imageAssetFormats = (args["imageAssetFormats"] as? [String]) ?? []
+          self.itemTree = (args["itemTree"] as? [[String: Any]]) ?? []
           self.rebuildMenu(defaultSizes: sizes, defaultColors: colors)
           result(nil)
         } else { result(FlutterError(code: "bad_args", message: "Missing items", details: nil)) }
@@ -279,6 +286,30 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
   private func rebuildMenu(defaultSizes: [Any]? = nil, defaultColors: [Any]? = nil) {
     // iOS 14+ native menu
     if #available(iOS 14.0, *) {
+      if !itemTree.isEmpty {
+        let items = buildMenuTreeItems(from: itemTree)
+        if preserveTopToBottomOrder {
+          let deferredElement = UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self = self else { completion([]); return }
+            let items = self.buildMenuTreeItems(from: self.itemTree)
+
+            let buttonFrame = self.button.convert(self.button.bounds, to: nil)
+            let screenHeight = UIScreen.main.bounds.height
+            let opensUpward = buttonFrame.midY > screenHeight * 0.4
+
+            if opensUpward {
+              completion(items.reversed().map { self.reversedDisplayOrderElement($0) })
+            } else {
+              completion(items)
+            }
+          }
+          button.menu = UIMenu(title: "", children: [deferredElement])
+          return
+        }
+        button.menu = UIMenu(title: "", children: items)
+        return
+      }
+
       // If preserveTopToBottomOrder is enabled, use deferred menu to check position at display time
       if preserveTopToBottomOrder {
         let deferredElement = UIDeferredMenuElement.uncached { [weak self] completion in
@@ -292,12 +323,7 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
 
           if opensUpward {
             // Reverse groups AND items within each group
-            let reversed: [UIMenuElement] = items.reversed().map { element in
-              if let menu = element as? UIMenu {
-                return UIMenu(title: menu.title, options: menu.options, children: menu.children.reversed())
-              }
-              return element
-            }
+            let reversed: [UIMenuElement] = items.reversed().map { self.reversedDisplayOrderElement($0) }
             completion(reversed)
           } else {
             completion(items)
@@ -311,6 +337,162 @@ class CupertinoPopupMenuButtonPlatformView: NSObject, FlutterPlatformView {
       let items = buildMenuItems(defaultSizes: defaultSizes, defaultColors: defaultColors)
       button.menu = UIMenu(title: "", children: items)
     }
+  }
+
+  @available(iOS 14.0, *)
+  private func buildMenuTreeItems(from nodes: [[String: Any]]) -> [UIMenuElement] {
+    var groups: [[UIMenuElement]] = []
+    var current: [UIMenuElement] = []
+    let flushGroup: () -> Void = {
+      if !current.isEmpty {
+        groups.append(current)
+        current = []
+      }
+    }
+
+    for node in nodes {
+      let type = (node["type"] as? String) ?? "item"
+      if type == "divider" {
+        flushGroup()
+        continue
+      }
+
+      if let element = buildMenuTreeElement(from: node) {
+        current.append(element)
+      }
+    }
+
+    flushGroup()
+    return groups.map { group in
+      UIMenu(title: "", options: .displayInline, children: group)
+    }
+  }
+
+  @available(iOS 14.0, *)
+  private func buildMenuTreeElement(from node: [String: Any]) -> UIMenuElement? {
+    let type = (node["type"] as? String) ?? "item"
+    let title = (node["label"] as? String) ?? ""
+    let image = makeMenuImage(from: node)
+
+    if type == "submenu" {
+      let children = buildMenuTreeItems(from: (node["children"] as? [[String: Any]]) ?? [])
+      return UIMenu(title: title, image: image, children: children)
+    }
+
+    guard type == "item" else { return nil }
+    let isEnabled = (node["enabled"] as? NSNumber)?.boolValue ?? true
+    let isChecked = (node["checked"] as? NSNumber)?.boolValue ?? false
+    let action = UIAction(title: title, image: image, attributes: isEnabled ? [] : [.disabled]) { [weak self] _ in
+      guard let self = self else { return }
+      var args: [String: Any] = [:]
+      if let index = (node["legacyIndex"] as? NSNumber)?.intValue {
+        args["index"] = index
+      }
+      if let path = node["selectionPath"] as? [NSNumber] {
+        args["selectionPath"] = path.map { $0.intValue }
+      } else if let path = node["selectionPath"] as? [Int] {
+        args["selectionPath"] = path
+      }
+      self.channel.invokeMethod("itemSelected", arguments: args)
+    }
+    action.state = isChecked ? .on : .off
+    return action
+  }
+
+  private func reversedDisplayOrderElement(_ element: UIMenuElement) -> UIMenuElement {
+    guard let menu = element as? UIMenu, menu.options.contains(.displayInline) else {
+      return element
+    }
+    return UIMenu(title: menu.title, options: menu.options, children: menu.children.reversed())
+  }
+
+  private func makeMenuImage(from node: [String: Any]) -> UIImage? {
+    var image: UIImage? = nil
+
+    if let assetPath = node["imageAssetPath"] as? String, !assetPath.isEmpty {
+      let format = node["imageAssetFormat"] as? String
+      let iconColorARGB = (node["sfSymbolColor"] as? NSNumber)?.intValue
+      let iconSize = (node["sfSymbolSize"] as? NSNumber).map { CGFloat(truncating: $0) } ?? 18.0
+      if let argb = iconColorARGB, #available(iOS 13.0, *) {
+        image = ImageUtils.loadAndTintImage(
+          from: assetPath,
+          iconSize: iconSize,
+          iconColor: argb,
+          providedFormat: format,
+          scale: self.iconScale
+        )
+      } else {
+        let size = CGSize(width: iconSize, height: iconSize)
+        image = ImageUtils.loadFlutterAsset(assetPath, size: size, format: format, scale: self.iconScale)
+      }
+    } else if let data = (node["imageAssetData"] as? FlutterStandardTypedData)?.data {
+      let format = node["imageAssetFormat"] as? String
+      let iconColorARGB = (node["sfSymbolColor"] as? NSNumber)?.intValue
+      let iconSize = (node["sfSymbolSize"] as? NSNumber).map { CGFloat(truncating: $0) } ?? 18.0
+      if let argb = iconColorARGB, #available(iOS 13.0, *) {
+        image = ImageUtils.createAndTintImage(
+          from: data,
+          iconSize: iconSize,
+          iconColor: argb,
+          providedFormat: format,
+          scale: self.iconScale
+        )
+      } else {
+        let size = CGSize(width: iconSize, height: iconSize)
+        image = ImageUtils.createImageFromData(data, format: format, size: size, scale: self.iconScale)
+      }
+    }
+
+    if image == nil, let data = (node["customIconBytes"] as? FlutterStandardTypedData)?.data {
+      image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
+      if let colorNum = node["customIconColor"] as? NSNumber {
+        let tintColor = Self.colorFromARGB(colorNum.intValue)
+        image = image?.withTintColor(tintColor, renderingMode: .alwaysOriginal)
+      }
+    }
+
+    if image == nil, let symbolName = node["sfSymbol"] as? String, !symbolName.isEmpty {
+      image = UIImage(systemName: symbolName)
+    }
+
+    if let sizeNum = node["sfSymbolSize"] as? NSNumber {
+      let size = CGFloat(truncating: sizeNum)
+      if size > 0, let currentImage = image {
+        image = currentImage.applyingSymbolConfiguration(
+          UIImage.SymbolConfiguration(pointSize: size)
+        )
+      }
+    }
+
+    if let mode = node["sfSymbolRenderingMode"] as? String {
+      switch mode {
+      case "hierarchical":
+        if #available(iOS 15.0, *), let colorNum = node["sfSymbolColor"] as? NSNumber, let currentImage = image {
+          let cfg = UIImage.SymbolConfiguration(hierarchicalColor: Self.colorFromARGB(colorNum.intValue))
+          image = currentImage.applyingSymbolConfiguration(cfg)
+        }
+      case "palette":
+        if #available(iOS 15.0, *), let palette = node["sfSymbolPaletteColors"] as? [NSNumber], !palette.isEmpty, let currentImage = image {
+          let cfg = UIImage.SymbolConfiguration(paletteColors: palette.map { Self.colorFromARGB($0.intValue) })
+          image = currentImage.applyingSymbolConfiguration(cfg)
+        }
+      case "multicolor":
+        if #available(iOS 15.0, *), let currentImage = image {
+          let cfg = UIImage.SymbolConfiguration.preferringMulticolor()
+          image = currentImage.applyingSymbolConfiguration(cfg)
+        }
+      case "monochrome":
+        if let colorNum = node["sfSymbolColor"] as? NSNumber, let currentImage = image, #available(iOS 13.0, *) {
+          image = currentImage.withTintColor(Self.colorFromARGB(colorNum.intValue), renderingMode: .alwaysOriginal)
+        }
+      default:
+        break
+      }
+    } else if let colorNum = node["sfSymbolColor"] as? NSNumber, let currentImage = image, #available(iOS 13.0, *) {
+      image = currentImage.withTintColor(Self.colorFromARGB(colorNum.intValue), renderingMode: .alwaysOriginal)
+    }
+
+    return image
   }
 
   @available(iOS 14.0, *)
