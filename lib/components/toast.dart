@@ -516,6 +516,8 @@ class _ToastOverlayState extends State<_ToastOverlay>
         alignment = Alignment.topCenter;
         break;
       case CNToastPosition.center:
+        top = topPadding;
+        bottom = bottomPadding;
         alignment = Alignment.center;
         break;
       case CNToastPosition.bottom:
